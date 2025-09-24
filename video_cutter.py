@@ -1,5 +1,3 @@
-# python video_cutter.py "input\videos\input_name.mp4" "input\template\sidebar_template.png" --output "output\folder"
-
 import cv2
 import numpy as np
 import argparse
@@ -12,6 +10,15 @@ from typing import Dict, Any, List
 def analyze_frame(frame: np.ndarray, analysis_objects: Dict[str, Any]) -> Dict[str, Any]:
     """
     Analyzes a single frame using ORB feature matching to find a template.
+
+    Args:
+        frame (np.ndarray): The video frame to be analyzed.
+        analysis_objects (Dict[str, Any]): A dictionary containing the ORB detector,
+                                           matcher, and template keypoints/descriptors.
+
+    Returns:
+        Dict[str, Any]: A dictionary containing the number of good matches found
+                        and the coordinates of the bounding box if found.
     """
     orb = analysis_objects['orb']
     bf_matcher = analysis_objects['bf_matcher']
@@ -45,6 +52,14 @@ def analyze_frame(frame: np.ndarray, analysis_objects: Dict[str, Any]) -> Dict[s
 def annotate_frame(frame: np.ndarray, analysis_results: Dict[str, Any], fps: float) -> np.ndarray:
     """
     Draws debug information onto a frame.
+
+    Args:
+        frame (np.ndarray): The original frame to draw on.
+        analysis_results (Dict[str, Any]): The output from the analyze_frame function.
+        fps (float): The current processing speed in frames per second.
+
+    Returns:
+        np.ndarray: The frame with all debug annotations drawn on it.
     """
     annotated_frame = frame.copy()
     match_count = analysis_results['match_count']
@@ -79,13 +94,11 @@ def process_video(video_path: str, analysis_objects: Dict[str, Any], config: Dic
     if not cap.isOpened():
         return {"error": f"Could not open video file: {video_path}"}
 
-    # Prepare output path
     base_name = os.path.basename(video_path)
     file_name_without_ext = os.path.splitext(base_name)[0]
     output_filename = f"out_{file_name_without_ext}.mp4"
     full_output_path = os.path.join(config['output_folder'], output_filename)
 
-    # Video properties
     frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -93,23 +106,18 @@ def process_video(video_path: str, analysis_objects: Dict[str, Any], config: Dic
     
     output_writer = cv2.VideoWriter(full_output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
 
-    frames_processed = 0
-    frames_removed = 0
-    
-    # FPS counter variables
+    frames_processed, frames_removed = 0, 0
     fps_counter, fps_start_time, processing_fps = 0, time.time(), 0
 
     while cap.isOpened():
         ret, frame = cap.read()
-        if not ret:
-            break
+        if not ret: break
         
         frames_processed += 1
         print(f"  -> Processing frame {frames_processed}/{total_frames}...", end='\r')
-
+        
         analysis_results = analyze_frame(frame, analysis_objects)
         match_count = analysis_results['match_count']
-        
         panel_detected = match_count >= config['good_match_threshold']
 
         if config['debug']:
@@ -128,7 +136,7 @@ def process_video(video_path: str, analysis_objects: Dict[str, Any], config: Dic
         
         if panel_detected:
             frames_removed += 1
-            if not config['debug']: # In debug mode, we write all frames
+            if not config['debug']:
                 continue
 
         if not config['debug']:
@@ -146,26 +154,48 @@ def process_video(video_path: str, analysis_objects: Dict[str, Any], config: Dic
     }
 
 def main():
-    """
-    Main entry point. Loads config, orchestrates batch processing, and logs results.
-    """
+    """Main entry point. Loads config, orchestrates batch processing, and logs results."""
     parser = argparse.ArgumentParser(description="Batch process videos to remove frames with a specific panel.")
-    parser.add_argument("config_file", help="Path to the JSON configuration file.")
+    parser.add_argument("--config", help="Path to a JSON config file to override default behavior and specify files.")
+    parser.add_argument("--debug", action="store_true", help="Enables debug mode with a live preview.")
     args = parser.parse_args()
 
-    try:
-        with open(args.config_file, 'r') as f:
-            config = json.load(f)
-    except FileNotFoundError:
-        print(f"Error: Configuration file not found at '{args.config_file}'")
-        return
-    except json.JSONDecodeError:
-        print(f"Error: Could not parse '{args.config_file}'. Please check for JSON syntax errors.")
-        return
+    # --- Configuration Loading ---
+    DEFAULT_CONFIG = {
+        "template_input": "input/template/sidebar_template.png",
+        "output_folder": "output/processed_videos",
+        "good_match_threshold": 100,
+        "debug": args.debug
+    }
+    config = DEFAULT_CONFIG
+    files_to_process = []
+
+    if args.config:
+        print(f"Loading configuration from '{args.config}'...")
+        try:
+            with open(args.config, 'r') as f:
+                user_config = json.load(f)
+            config.update(user_config)
+            files_to_process = config.get("input_files", [])
+            if not files_to_process:
+                print("Warning: Config file specified but 'input_files' list is empty or missing.")
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"Error loading config file: {e}")
+            return
+    else:
+        print("No config file specified, running in default mode...")
+        input_dir = "input/videos"
+        if not os.path.isdir(input_dir):
+            print(f"Error: Default input directory '{input_dir}' not found. Please create it or use --config.")
+            return
+        video_extensions = ('.mp4', '.mov', '.avi', '.mkv')
+        files_to_process = [os.path.join(input_dir, f) for f in os.listdir(input_dir) if f.lower().endswith(video_extensions)]
 
     # --- Initialize shared resources ---
+    # Create the main output directory, then the specific sub-folder for videos
+    main_output_dir = os.path.dirname(config['output_folder']) if os.path.basename(config['output_folder']) == 'processed_videos' else config['output_folder']
     os.makedirs(config['output_folder'], exist_ok=True)
-    log_path = os.path.join(config['output_folder'], "processing_report.log")
+    log_path = os.path.join(main_output_dir, "processing_report.log")
     
     template_img = cv2.imread(config['template_input'])
     if template_img is None:
@@ -186,19 +216,14 @@ def main():
 
     # --- Main Batch Loop ---
     with open(log_path, 'w') as log_file:
-        log_file.write(f"--- Batch Processing Report ---\n")
-        log_file.write(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-
-        for i, video_file in enumerate(config['input_files']):
-            print(f"\nProcessing file {i+1}/{len(config['input_files'])}: {video_file}")
+        log_file.write(f"--- Batch Processing Report ---\nGenerated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+        for i, video_file in enumerate(files_to_process):
+            print(f"\nProcessing file {i+1}/{len(files_to_process)}: {video_file}")
             start_time = datetime.now()
-            
             stats = process_video(video_file, analysis_objects, config)
-            
             end_time = datetime.now()
             duration = (end_time - start_time).total_seconds()
             
-            # Log results
             log_file.write(f"--- File: {os.path.basename(video_file)} ---\n")
             log_file.write(f"Start Time:       {start_time.strftime('%Y-%m-%d %H:%M:%S')}\n")
             log_file.write(f"End Time:         {end_time.strftime('%Y-%m-%d %H:%M:%S')}\n")
