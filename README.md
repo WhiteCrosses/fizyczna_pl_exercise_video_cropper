@@ -1,5 +1,10 @@
+## Setup
+In cloned repo:
+>$ pip install -r requirements.txt
+
+## Running
 Using default settings
-> python video_cutter.py
+>$ python video_cutter.py
 
 or config from config.json file
-> python video_cutter --config config.json
+>$ python video_cutter --config config.json
