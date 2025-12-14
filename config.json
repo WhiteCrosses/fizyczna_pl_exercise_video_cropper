@@ -4,7 +4,6 @@
     "good_match_threshold": 100,
     "debug": false,
     "input_files": [
-        "input/videos/TERM lista 4 czesc 1 part.mp4",
-        "input/videos/TERM lista 4 czesc 1.mp4"
+        "input/videos/TERM lista 5 czesc 1.mp4"
     ]
 }
