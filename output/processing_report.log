@@ -1,19 +1,11 @@
 --- Batch Processing Report ---
-Generated on: 2025-09-22 10:59:43
+Generated on: 2025-12-14 18:26:21
 
---- File: Test_film_1.mp4 ---
-Start Time:       2025-09-22 10:59:43
-End Time:         2025-09-22 11:00:45
-Processing Time:  61.47 seconds
-Input Frames:     1320
-Frames Removed:   231
-Output Path:      output/processed_videos\out_Test_film_1.mp4
-
---- File: Test_film_2.mp4 ---
-Start Time:       2025-09-22 11:00:45
-End Time:         2025-09-22 11:01:47
-Processing Time:  62.73 seconds
-Input Frames:     1320
-Frames Removed:   231
-Output Path:      output/processed_videos\out_Test_film_2.mp4
+--- File: short_TERM lista 5 czesc 1.mp4 ---
+Start Time:       2025-12-14 18:26:21
+End Time:         2025-12-14 18:30:49
+Processing Time:  268.13 seconds
+Input Frames:     5400
+Frames Removed:   378
+Output Path:      output\out_short_TERM lista 5 czesc 1.mp4
 

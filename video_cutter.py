@@ -33,7 +33,12 @@ def analyze_frame(frame: np.ndarray, analysis_objects: Dict[str, Any]) -> Dict[s
         return {"match_count": 0, "box_points": None}
 
     matches = bf_matcher.knnMatch(template_des, frame_des, k=2)
-    good_matches = [m for m, n in matches if m.distance < 0.75 * n.distance]
+    good_matches = []
+    for match in matches:
+        if len(match) == 2:
+            m, n = match
+            if m.distance < 0.75 * n.distance:
+                good_matches.append(m)
     
     box_points = None
     if len(good_matches) > analysis_objects['config']['good_match_threshold']:
