@@ -1,0 +1,47 @@
+@startuml
+skinparam componentStyle rectangle
+skinparam packageStyle rectangle
+skinparam linetype ortho
+skinparam nodesep 100
+skinparam ranksep 60
+
+title Data Flow Diagram - Video Cutter
+
+file "Video File" as InputVideo
+
+package "                                                    Main Process" {
+    component "frame_generator" as Generator
+    queue "Buffer Deque" as Buffer
+    component "Writer Loop" as WriterLoop
+    
+    note left of Generator
+        Reads frames
+        Downscales for analysis
+        Manages backpressure
+    end note
+}
+
+package "Multiprocessing Environment" {
+    collections "Worker Processes" as Workers
+    
+    note right of Workers
+        Independent ORB Detectors
+        Parallel Execution
+    end note
+}
+
+file "Output Video" as OutputVideo
+
+' Data Flow Connections
+InputVideo --> Generator : Read Frame
+
+Generator -right-> Buffer : Original Frame\n(High Res)
+Generator --> Workers : Downscaled Frame\n(Low Res)
+
+Workers --> WriterLoop : Analysis Result\n(Match Count)
+Buffer --> WriterLoop : Original Frame
+
+' Decision Logic
+WriterLoop --> OutputVideo : [No Match]\nWrite Frame
+
+@enduml

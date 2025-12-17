@@ -6,6 +6,9 @@ import os
 import json
 from datetime import datetime
 from typing import Dict, Any, List
+import multiprocessing
+from collections import deque
+from tqdm import tqdm
 
 def analyze_frame(frame: np.ndarray, analysis_objects: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -30,7 +33,7 @@ def analyze_frame(frame: np.ndarray, analysis_objects: Dict[str, Any]) -> Dict[s
     frame_kp, frame_des = orb.detectAndCompute(gray_frame, None)
 
     if template_des is None or frame_des is None:
-        return {"match_count": 0, "box_points": None}
+        return {"match_count": 0, "box_points": None, "matched_points": None}
 
     matches = bf_matcher.knnMatch(template_des, frame_des, k=2)
     good_matches = []
@@ -39,6 +42,10 @@ def analyze_frame(frame: np.ndarray, analysis_objects: Dict[str, Any]) -> Dict[s
             m, n = match
             if m.distance < 0.75 * n.distance:
                 good_matches.append(m)
+    
+    matched_points = None
+    if good_matches:
+        matched_points = np.array([frame_kp[m.trainIdx].pt for m in good_matches], dtype=np.float32)
     
     box_points = None
     if len(good_matches) > analysis_objects['config']['good_match_threshold']:
@@ -52,7 +59,7 @@ def analyze_frame(frame: np.ndarray, analysis_objects: Dict[str, Any]) -> Dict[s
             dst = cv2.perspectiveTransform(pts, homography_matrix)
             box_points = np.int32(dst)
 
-    return {"match_count": len(good_matches), "box_points": box_points}
+    return {"match_count": len(good_matches), "box_points": box_points, "matched_points": matched_points}
 
 def annotate_frame(frame: np.ndarray, analysis_results: Dict[str, Any], fps: float) -> np.ndarray:
     """
@@ -80,8 +87,47 @@ def annotate_frame(frame: np.ndarray, analysis_results: Dict[str, Any], fps: flo
     if box_points is not None:
         cv2.polylines(annotated_frame, [box_points], True, (0, 255, 0), 3, cv2.LINE_AA)
 
+    matched_points = analysis_results.get('matched_points')
+    if matched_points is not None:
+        for pt in matched_points:
+            cv2.circle(annotated_frame, (int(pt[0]), int(pt[1])), 4, (255, 0, 0), -1)
+
     return annotated_frame
 
+
+_worker_analysis_objects = None
+
+def init_worker(template_img: np.ndarray, config: Dict[str, Any], scale_factor: float = 1.0):
+    """Initializes the worker process with its own ORB detector and matcher."""
+    global _worker_analysis_objects
+    # Prevent OpenCV from using multiple threads inside this process to avoid oversubscription
+    cv2.setNumThreads(0)
+    
+    if scale_factor != 1.0:
+        # Resize template to match the analysis frame scale
+        template_img = cv2.resize(template_img, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_AREA)
+
+    # Ensure template is grayscale for consistent feature detection
+    if len(template_img.shape) == 3:
+        template_img = cv2.cvtColor(template_img, cv2.COLOR_BGR2GRAY)
+
+    orb = cv2.ORB_create(nfeatures=1000)
+    bf_matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+    kp, des = orb.detectAndCompute(template_img, None)
+    
+    _worker_analysis_objects = {
+        'orb': orb,
+        'bf_matcher': bf_matcher,
+        'template_img': template_img,
+        'template_kp': kp,
+        'template_des': des,
+        'config': config,
+        'scale_factor': scale_factor
+    }
+
+def worker_analyze_frame(frame: np.ndarray) -> Dict[str, Any]:
+    """Wrapper to call analyze_frame using the worker's global objects."""
+    return analyze_frame(frame, _worker_analysis_objects)
 
 def process_video(video_path: str, analysis_objects: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -114,42 +160,80 @@ def process_video(video_path: str, analysis_objects: Dict[str, Any], config: Dic
     frames_processed, frames_removed = 0, 0
     fps_counter, fps_start_time, processing_fps = 0, time.time(), 0
 
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret: break
-        
-        frames_processed += 1
-        print(f"  -> Processing frame {frames_processed}/{total_frames}...", end='\r')
-        
-        analysis_results = analyze_frame(frame, analysis_objects)
-        match_count = analysis_results['match_count']
-        panel_detected = match_count >= config['good_match_threshold']
+    # Prepare for parallel processing
+    num_cores = multiprocessing.cpu_count()
+    frame_queue = deque()
+    # Limit the buffer size to prevent OutOfMemory errors (backpressure)
+    MAX_QUEUE_SIZE = max(4, num_cores * 2)
 
-        if config['debug']:
-            fps_counter += 1
-            elapsed = time.time() - fps_start_time
-            if elapsed > 1.0:
-                processing_fps = fps_counter / elapsed
-                fps_counter, fps_start_time = 0, time.time()
+    # Optimization: Downscale frame for analysis to speed up ORB
+    # 960px width is usually sufficient for accurate detection of panels
+    target_analysis_width = 960
+    scale_factor = 1.0
+    if frame_width > target_analysis_width:
+        scale_factor = target_analysis_width / frame_width
 
-            debug_frame = annotate_frame(frame, analysis_results, processing_fps)
-            cv2.imshow('Debug Preview', debug_frame)
-            output_writer.write(debug_frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                print("\nProcessing interrupted by user.")
+    def frame_generator():
+        """Yields frames from the video capture and buffers them for writing."""
+        while cap.isOpened():
+            # Pause reading if the queue is full to prevent memory overflow
+            while len(frame_queue) >= MAX_QUEUE_SIZE:
+                time.sleep(0.01)
+
+            ret, frame = cap.read()
+            if not ret:
                 break
-        
-        if panel_detected:
-            frames_removed += 1
-            if not config['debug']:
-                continue
+            frame_queue.append(frame)
+            
+            if scale_factor != 1.0:
+                yield cv2.resize(frame, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_LINEAR)
+            else:
+                yield frame
 
-        if not config['debug']:
-             output_writer.write(frame)
+    # Initialize the worker pool
+    template_img = analysis_objects['template_img']
+    with multiprocessing.Pool(processes=num_cores, initializer=init_worker, initargs=(template_img, config, scale_factor)) as pool:
+        # Process frames in parallel while maintaining order
+        pbar = tqdm(pool.imap(worker_analyze_frame, frame_generator()), total=total_frames, unit="frame", desc="Processing")
+        for analysis_results in pbar:
+            frame = frame_queue.popleft()
+            frames_processed += 1
+
+            # Scale bounding box back to original coordinates for correct debug drawing
+            if scale_factor != 1.0:
+                if analysis_results['box_points'] is not None:
+                    analysis_results['box_points'] = (analysis_results['box_points'] / scale_factor).astype(np.int32)
+                if analysis_results['matched_points'] is not None:
+                    analysis_results['matched_points'] = analysis_results['matched_points'] / scale_factor
+
+            match_count = analysis_results['match_count']
+            panel_detected = match_count >= config['good_match_threshold']
+
+            if config['debug']:
+                fps_counter += 1
+                elapsed = time.time() - fps_start_time
+                if elapsed > 1.0:
+                    processing_fps = fps_counter / elapsed
+                    fps_counter, fps_start_time = 0, time.time()
+
+                debug_frame = annotate_frame(frame, analysis_results, processing_fps)
+                cv2.imshow('Debug Preview', debug_frame)
+                output_writer.write(debug_frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    print("\nProcessing interrupted by user.")
+                    break
+            
+            if panel_detected:
+                frames_removed += 1
+                pbar.set_postfix(removed=frames_removed)
+                if not config['debug']:
+                    continue
+
+            if not config['debug']:
+                output_writer.write(frame)
 
     cap.release()
     output_writer.release()
-    print() # Newline after progress indicator
     
     return {
         "total_frames": total_frames,
@@ -169,7 +253,7 @@ def main():
     DEFAULT_CONFIG = {
         "template_input": "input/template/sidebar_template.png",
         "output_folder": "output/processed_videos",
-        "good_match_threshold": 100,
+        "good_match_threshold": 50,
         "debug": args.debug
     }
     config = DEFAULT_CONFIG
