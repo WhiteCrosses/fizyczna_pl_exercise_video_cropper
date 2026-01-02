@@ -2,8 +2,5 @@
     "template_input": "input/template/sidebar_template.png",
     "output_folder": "output",
     "good_match_threshold": 50,
-    "debug": false,
-    "input_files": [
-        "input/videos/TERM lista 5 czesc 1.mp4"
-    ]
+    "debug": false
 }
